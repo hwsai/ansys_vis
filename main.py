@@ -1,18 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Step 6：左右可選下拉 + 雙圖開關 + 同色軸範圍（含可選邊界）
-- 介面：
-  • 檔案選擇
-  • 左側結果下拉（Displacement / Von Mises / Predicted）
-  • [✓] 雙圖對照 → 右側結果下拉（啟用/停用）
-  • [✓] 同色軸範圍（當雙圖時，根據左右兩圖的值域統一）
-  • [✓] 顯示邊界（若有 node_features）
-  • 開始
-- 注意：Displacement 在你的 Vis_tools 目前回傳的是向量場（3 分量）。
-  為了能著色，我這裡會自動取其「向量幅值」做為標量來顯示（不會更動原資料）。
+Step 7：UI 常駐 & 可重複執行
+- Tk 視窗不會因為按「開始」而關閉；你可以多次執行不同組合。
+- 每次按「開始」都會開一個新的 PyVista 視窗，且**非阻塞**（不會卡住 Tk）。
+- 提供「關閉所有視窗」按鈕，一鍵關閉當前由本程式開啟的所有 PyVista 視窗。
+- 保留先前功能：左右下拉、雙圖對照、同色軸範圍、顯示邊界、色階數、顯示網格。
 
 用法：
-    python viewer_step6_gui_dual_custom.py
+    python viewer_step7_gui_persistent.py
 """
 import os
 import sys
@@ -23,7 +18,7 @@ from tkinter import ttk, filedialog, messagebox
 import pyvista as pv
 from vis_lab import Vis_tools
 
-APP_TITLE = "可視化：左右可選 + 雙圖 + 同色軸 + 邊界"
+APP_TITLE = "可視化：常駐UI / 多次執行"
 DEFAULT_DIR = "data"
 
 RESULT_CHOICES = [
@@ -32,13 +27,16 @@ RESULT_CHOICES = [
     ("Predicted stress", "pred"),
 ]
 
+# 追蹤已開啟的 Plotter（便於一鍵關閉）
+OPEN_PLOTTERS = []
+
 # -------------------- 資料/視覺工具 --------------------
 
 def _make_solution_grid(vis: Vis_tools, base_grid: pv.PolyData, kind: str):
-    """回傳 (grid_with_scalar_solution, scalar_1d_array, title)
+    """回傳 (grid_with_scalar_solution, scalar_1d_array, scalar_name, title)
     - 會複製 base_grid，避免原地覆寫。
-    - Displacement 會轉成幅值標量供著色。
-    - 若 Pred 欄位不存在而選 pred，回傳 (None, None, None)。
+    - Displacement 轉成幅值標量供著色。
+    - 若 Pred 欄位不存在而選 pred，回傳 (None, None, None, None)。
     """
     g = base_grid.copy()
     try:
@@ -97,22 +95,24 @@ def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> b
     return True
 
 
-def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str, lock_clim: bool, show_bc: bool, n_colors: int, show_edges: bool):
+def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str,
+              lock_clim: bool, show_bc: bool, n_colors: int, show_edges: bool):
+    """建立一個 Plotter 並以**非阻塞**方式顯示，回傳 plotter 物件。"""
     try:
         vis = Vis_tools(file_path)
     except Exception as e:
         messagebox.showerror("載入失敗", f"無法載入檔案：\n{e}")
-        return
+        return None
 
     base = vis.subset
 
-    # 準備左圖
+    # 左圖
     gL, sL, snameL, titleL = _make_solution_grid(vis, base, left_key)
     if gL is None:
         messagebox.showerror('錯誤', '無法產生左側視圖。')
-        return
+        return None
 
-    # 決定欄數
+    # 欄數
     cols = 1
     gR = sR = snameR = titleR = None
     if enable_dual:
@@ -124,7 +124,7 @@ def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str, 
     if show_bc:
         cols += 1
 
-    # 同色軸（僅在雙圖且兩側皆為標量時生效）
+    # 同色軸（雙圖）
     clim = None
     if enable_dual and (sL is not None) and (sR is not None) and lock_clim:
         try:
@@ -135,17 +135,15 @@ def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str, 
         except Exception:
             clim = None
 
-    # 建立 Plotter
+    # 建立 Plotter 並非阻塞顯示
     p = pv.Plotter(shape=(1, cols))
 
-    # 左
     cur = 0
     p.subplot(0, cur)
     p.add_text(titleL, font_size=12, viewport=True, position=(0.02, 0.96))
     p.add_mesh(gL, scalars=snameL, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges)
     p.add_scalar_bar(title=titleL); p.show_axes()
 
-    # 右（若有）
     if enable_dual and (gR is not None) and (sR is not None):
         cur += 1
         p.subplot(0, cur)
@@ -153,7 +151,6 @@ def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str, 
         p.add_mesh(gR, scalars=snameR, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges)
         p.add_scalar_bar(title=titleR); p.show_axes()
 
-    # 邊界（若有）
     if show_bc:
         cur += 1
         ok = _add_boundary_subplot(p, base, cur)
@@ -161,17 +158,20 @@ def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str, 
             p.subplot(0, cur)
             p.add_text('Boundary (資料不足)', font_size=12, viewport=True, position=(0.02, 0.96))
 
-    p.link_views(); p.enable_parallel_projection(); p.show()
+    p.link_views(); p.enable_parallel_projection()
+    # 非阻塞顯示：不自動關閉 + 立即返回
+    p.show(auto_close=False, interactive_update=True)
+    return p
 
 
 # -------------------- GUI --------------------
 
 def build_ui(root):
     root.title(APP_TITLE)
-    root.minsize(760, 260)
+    root.minsize(820, 300)
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    w, h = 800, 280
+    w, h = 860, 320
     x, y = (sw - w) // 2, (sh - h) // 3
     root.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -197,47 +197,44 @@ def build_ui(root):
 
     ttk.Button(frm, text='瀏覽…', command=browse).grid(row=1, column=3, sticky='w', padx=(8, 0))
 
-    # 左側下拉
+    # 左下拉
     ttk.Label(frm, text='左側結果：').grid(row=2, column=0, sticky='w')
-    left_var = tk.StringVar(value=RESULT_CHOICES[1][0])  # 預設 Von Mises
+    left_var = tk.StringVar(value=RESULT_CHOICES[1][0])
     combo_left = ttk.Combobox(frm, values=[n for n, _ in RESULT_CHOICES], state='readonly', textvariable=left_var)
     combo_left.grid(row=3, column=0, sticky='w', pady=(4, 10))
 
-    # 雙圖 + 右側下拉
+    # 雙圖 + 右下拉
     dual_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frm, text='雙圖對照', variable=dual_var, command=lambda: combo_right.configure(state='readonly' if dual_var.get() else 'disabled')).grid(row=2, column=1, sticky='w')
     ttk.Label(frm, text='右側結果：').grid(row=2, column=2, sticky='w')
-    right_var = tk.StringVar(value=RESULT_CHOICES[2][0])  # 預設 Predicted
+    right_var = tk.StringVar(value=RESULT_CHOICES[2][0])
     combo_right = ttk.Combobox(frm, values=[n for n, _ in RESULT_CHOICES], state='readonly', textvariable=right_var)
     combo_right.grid(row=3, column=2, sticky='w', pady=(4, 10))
 
-    # 同色軸 / 邊界
+    # 同色軸 / 邊界 / 色階數 / 網格
     lock_clim_var = tk.BooleanVar(value=True)
     show_bc_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frm, text='同一個色軸範圍（雙圖時）', variable=lock_clim_var).grid(row=3, column=1, sticky='w')
     ttk.Checkbutton(frm, text='顯示邊界條件（若有 node_features）', variable=show_bc_var).grid(row=3, column=3, sticky='w')
 
-    # 色階數（n_colors）
     ncolors_var = tk.IntVar(value=10)
     ttk.Label(frm, text='色階數：').grid(row=4, column=0, sticky='w')
     tk.Spinbox(frm, from_=3, to=256, textvariable=ncolors_var, width=6).grid(row=4, column=1, sticky='w')
 
-    # 顯示網格（Edges）
     edges_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frm, text='顯示網格（Edges）', variable=edges_var).grid(row=4, column=2, sticky='w')
 
-    # 初始根據勾選狀態設定右側下拉可用性
-    combo_right.configure(state='readonly' if dual_var.get() else 'disabled')
+    # 按鈕列：開始 / 關閉所有視窗
+    btns = ttk.Frame(frm)
+    btns.grid(row=6, column=0, columnspan=4, sticky='ew')
 
-    # 開始
     def on_start():
         path = file_var.get().strip()
         if not path:
             messagebox.showwarning('提醒', '請先選擇檔案。'); return
         if not os.path.exists(path):
             messagebox.showerror('錯誤', f'找不到檔案：\n{path}'); return
-
-        # 轉成 key
+        # 名稱轉 key
         def name2key(name: str) -> str:
             for n, k in RESULT_CHOICES:
                 if n == name: return k
@@ -245,8 +242,7 @@ def build_ui(root):
         left_key = name2key(left_var.get())
         right_key = name2key(right_var.get())
 
-        root.destroy()
-        visualize(
+        plotter = visualize(
             path,
             left_key=left_key,
             enable_dual=dual_var.get(),
@@ -254,19 +250,28 @@ def build_ui(root):
             lock_clim=lock_clim_var.get(),
             show_bc=show_bc_var.get(),
             n_colors=int(ncolors_var.get()),
-            show_edges=edges_var.get(),
+            show_edges=bool(edges_var.get()),
         )
+        if plotter is not None:
+            OPEN_PLOTTERS.append(plotter)
 
-    ttk.Button(frm, text='開始', command=on_start).grid(row=6, column=3, sticky='e')
+    def close_all():
+        while OPEN_PLOTTERS:
+            p = OPEN_PLOTTERS.pop()
+            try:
+                p.close()
+            except Exception:
+                pass
+
+    ttk.Button(btns, text='開始', command=on_start).pack(side='right')
+    ttk.Button(btns, text='關閉所有視窗', command=close_all).pack(side='right', padx=8)
 
 
 if __name__ == '__main__':
     try:
-        import tkinter as tk
-        from tkinter import ttk, filedialog, messagebox
+        root = tk.Tk()
     except Exception as e:
-        print('無法載入 Tkinter：', e)
+        print('無法建立 Tk 視窗：', e)
         sys.exit(1)
-    root = tk.Tk()
     build_ui(root)
     root.mainloop()
