@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Step 4：在極簡 GUI 版加入「鎖定 2/3 同色階」
-- 介面：選檔、結果下拉、[✓] 顯示邊界、[✓] 鎖定 2/3 同色階、開始
-- 說明：
-  * 仍然一次只顯示一種結果（Displacement 或 Von/Pred）。
-  * 當勾選「鎖定 2/3 同色階」且選擇的是 Von 或 Pred 時：
-      會同時計算真實 Von 與 Pred 的極值範圍（若 Pred 欄位存在），
-      並用同一個色階範圍繪圖，方便你切換比較時色軸一致。
-  * 若資料沒有 Pred 欄位，會退回僅以所選結果的色階繪圖。
+Step 5：雙圖對照（Von vs Pred）+ 可選邊界
+- 介面：選檔、[✓] 雙圖對照（Von 與 Pred 並排）、[✓] 顯示邊界、開始
+- 行為：
+  * 若勾選「雙圖對照」，主視區固定顯示左=Von、右=Pred；色階自動以兩者聯集統一。
+  * 若資料缺少 Pred 欄位，會提示並退回單圖（Von）。
+  * 勾選「顯示邊界」時，會在最右邊再加一格顯示 Boundary。
+- 仍維持極簡：無 MSE、無快捷鍵、無其他選項。
 
 用法：
-    python viewer_step4_gui_bc_clim.py
+    python viewer_step5_gui_dual.py
 """
 import os
 import sys
@@ -21,20 +20,12 @@ from tkinter import ttk, filedialog, messagebox
 import pyvista as pv
 from vis_lab import Vis_tools
 
-APP_TITLE = "最小可視化：選檔 + 結果 + 邊界 + 同色階"
+APP_TITLE = "最小可視化：雙圖對照（Von vs Pred）+ 邊界"
 DEFAULT_DIR = "data"
-
-RESULT_CHOICES = [
-    ("Displacement", "dis"),
-    ("Von Mises stress", "von"),
-    ("Predicted stress", "pred"),
-]
 
 
 def _extract_solution_array(vis: Vis_tools, base_grid: pv.PolyData, kind: str):
-    """回傳指定 kind 的 solution ndarray；kind in {'von','pred','dis'}。
-    會複製 base_grid，避免原地覆寫衝突。失敗時回傳 (None, None)。
-    """
+    """回傳 (grid_with_solution, ndarray, title)；失敗時 (None, None, None)。"""
     g = base_grid.copy()
     try:
         vis.subset = g
@@ -46,7 +37,7 @@ def _extract_solution_array(vis: Vis_tools, base_grid: pv.PolyData, kind: str):
             vis.dis_solution(); title = 'Displacement'
         arr = g.point_data['solution']
         return g, arr, title
-    except Exception as e:
+    except Exception:
         return None, None, None
 
 
@@ -70,6 +61,7 @@ def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> b
     if load_pts.size == 0 and fixed_pts.size == 0:
         return False
 
+    # 點大小依模型尺度（對角線 1%）
     b = grid.bounds
     diag = float(np.linalg.norm([b[1]-b[0], b[3]-b[2], b[5]-b[4]]))
     psize = max(diag * 0.01, 2.0)
@@ -85,74 +77,97 @@ def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> b
     return True
 
 
-def visualize(file_path: str, result_key: str, show_bc: bool, lock_clim: bool):
+def visualize(file_path: str, dual: bool, show_bc: bool):
     try:
         vis = Vis_tools(file_path)
     except Exception as e:
         messagebox.showerror("載入失敗", f"無法載入檔案：\n{e}")
         return
 
-    base = vis.subset  # 原始子網格
+    base = vis.subset
 
-    # 準備色階（僅在 von/pred 且勾選 lock_clim 時才試圖統一）
-    clim = None
-    if lock_clim and result_key in {"von", "pred"}:
-        # 嘗試同時取 von 與 pred 的值域（pred 可能不存在）
-        g_von, a_von, _ = _extract_solution_array(vis, base, 'von')
-        g_pred, a_pred, _ = _extract_solution_array(vis, base, 'pred')
-        vals = []
-        if a_von is not None and np.size(a_von) > 0:
-            vals.append((np.nanmin(a_von), np.nanmax(a_von)))
-        if a_pred is not None and np.size(a_pred) > 0:
-            vals.append((np.nanmin(a_pred), np.nanmax(a_pred)))
-        if vals:
-            vmin = float(np.nanmin([v[0] for v in vals]))
-            vmax = float(np.nanmax([v[1] for v in vals]))
-            if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
-                clim = (vmin, vmax)
-            else:
-                clim = None  # 回退
-
-    # 產出實際要顯示的結果
-    g_show, _, title = _extract_solution_array(vis, base, result_key)
-    if g_show is None:
-        # 最後退回 Von Mises
-        vis.subset = base.copy()
-        try:
-            vis.stress_solution(); g_show = vis.subset; title = 'Von Mises stress'
-        except Exception as e:
-            messagebox.showerror('錯誤', f'無法產生可視化：\n{e}')
+    if dual:
+        # 取 Von 與 Pred
+        g_von, a_von, t_von = _extract_solution_array(vis, base, 'von')
+        g_pred, a_pred, t_pred = _extract_solution_array(vis, base, 'pred')
+        if g_von is None:
+            messagebox.showerror('錯誤', '無法產生 Von Mises 視圖。')
             return
+        if g_pred is None or a_pred is None or a_pred.size == 0:
+            messagebox.showwarning('提示', '找不到 Pred 欄位，改為單圖（Von）。')
+            # 單圖路徑
+            cols = 2 if show_bc else 1
+            p = pv.Plotter(shape=(1, cols))
+            p.subplot(0, 0)
+            p.add_text(t_von, font_size=12, viewport=True, position=(0.02, 0.96))
+            p.add_mesh(g_von, scalars='solution', cmap='jet')
+            p.add_scalar_bar(title=t_von)
+            p.show_axes()
+            if show_bc:
+                ok = _add_boundary_subplot(p, base, 1)
+                if not ok:
+                    p.subplot(0, 1)
+                    p.add_text('Boundary (資料不足)', font_size=12, viewport=True, position=(0.02, 0.96))
+            p.link_views(); p.enable_parallel_projection(); p.show()
+            return
+        # 計算共用色階
+        vmin = float(np.nanmin([np.nanmin(a_von), np.nanmin(a_pred)]))
+        vmax = float(np.nanmax([np.nanmax(a_von), np.nanmax(a_pred)]))
+        clim = (vmin, vmax) if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin else None
+
+        cols = 3 if show_bc else 2
+        p = pv.Plotter(shape=(1, cols))
+        # 左：Von
+        p.subplot(0, 0)
+        p.add_text(t_von, font_size=12, viewport=True, position=(0.02, 0.96))
+        p.add_mesh(g_von, scalars='solution', cmap='jet', clim=clim)
+        p.add_scalar_bar(title=t_von)
+        p.show_axes()
+        # 右：Pred
+        p.subplot(0, 1)
+        p.add_text(t_pred, font_size=12, viewport=True, position=(0.02, 0.96))
+        p.add_mesh(g_pred, scalars='solution', cmap='jet', clim=clim)
+        p.add_scalar_bar(title=t_pred)
+        p.show_axes()
+        # 邊界
+        if show_bc:
+            ok = _add_boundary_subplot(p, base, 2)
+            if not ok:
+                p.subplot(0, 2)
+                p.add_text('Boundary (資料不足)', font_size=12, viewport=True, position=(0.02, 0.96))
+        p.link_views(); p.enable_parallel_projection(); p.show()
+        return
+
+    # 單圖（預設畫 Von）
+    g_von, _, t_von = _extract_solution_array(vis, base, 'von')
+    if g_von is None:
+        messagebox.showerror('錯誤', '無法產生 Von Mises 視圖。')
+        return
 
     cols = 2 if show_bc else 1
     p = pv.Plotter(shape=(1, cols))
-
     p.subplot(0, 0)
-    p.add_text(title, font_size=12, viewport=True, position=(0.02, 0.96))
-    p.add_mesh(g_show, scalars='solution', cmap='jet', clim=clim)
-    p.add_scalar_bar(title=title)
+    p.add_text(t_von, font_size=12, viewport=True, position=(0.02, 0.96))
+    p.add_mesh(g_von, scalars='solution', cmap='jet')
+    p.add_scalar_bar(title=t_von)
     p.show_axes()
-
     if show_bc:
         ok = _add_boundary_subplot(p, base, 1)
         if not ok:
             p.subplot(0, 1)
             p.add_text('Boundary (資料不足)', font_size=12, viewport=True, position=(0.02, 0.96))
-
-    p.link_views()
-    p.enable_parallel_projection()
-    p.show()
+    p.link_views(); p.enable_parallel_projection(); p.show()
 
 
 # ------------------- GUI -------------------
 
 def build_ui(root):
     root.title(APP_TITLE)
-    root.minsize(620, 240)
+    root.minsize(600, 220)
 
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    w, h = 660, 260
+    w, h = 640, 240
     x, y = (sw - w) // 2, (sh - h) // 3
     root.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -178,18 +193,11 @@ def build_ui(root):
 
     ttk.Button(frm, text="瀏覽…", command=browse).grid(row=1, column=3, sticky="w", padx=(8, 0))
 
-    # --- 結果下拉 ---
-    ttk.Label(frm, text="結果類型：").grid(row=2, column=0, sticky="w")
-    choice_names = [name for name, _ in RESULT_CHOICES]
-    combo = ttk.Combobox(frm, values=choice_names, state="readonly")
-    combo.set(choice_names[1])  # 預設 Von Mises
-    combo.grid(row=3, column=0, sticky="w", pady=(4, 10))
-
-    # --- 勾選：顯示邊界 / 鎖定色階 ---
+    # --- 勾選項 ---
+    dual_var = tk.BooleanVar(value=True)
     show_bc_var = tk.BooleanVar(value=True)
-    lock_clim_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(frm, text="顯示邊界條件（若有 node_features）", variable=show_bc_var).grid(row=3, column=1, sticky="w")
-    ttk.Checkbutton(frm, text="鎖定 2/3 同色階（若存在 Pred）", variable=lock_clim_var).grid(row=3, column=2, sticky="w")
+    ttk.Checkbutton(frm, text="雙圖對照（左：Von，右：Pred）", variable=dual_var).grid(row=2, column=0, sticky="w")
+    ttk.Checkbutton(frm, text="顯示邊界條件（若有 node_features）", variable=show_bc_var).grid(row=2, column=1, sticky="w")
 
     # --- 開始 ---
     def on_start():
@@ -200,10 +208,8 @@ def build_ui(root):
         if not os.path.exists(path):
             messagebox.showerror("錯誤", f"找不到檔案：\n{path}")
             return
-        sel_name = combo.get()
-        key = next((k for name, k in RESULT_CHOICES if name == sel_name), "von")
         root.destroy()
-        visualize(path, key, show_bc_var.get(), lock_clim_var.get())
+        visualize(path, dual_var.get(), show_bc_var.get())
 
     ttk.Button(frm, text="開始", command=on_start).grid(row=3, column=3, sticky="e")
 
