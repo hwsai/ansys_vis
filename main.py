@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Step 7：UI 常駐 & 可重複執行
+Step 7：UI 常駐 & 可重複執行（含 UI 計算 MSE 按鈕）
 - Tk 視窗不會因為按「開始」而關閉；你可以多次執行不同組合。
 - 每次按「開始」都會開一個新的 PyVista 視窗，且**非阻塞**（不會卡住 Tk）。
 - 提供「關閉所有視窗」按鈕，一鍵關閉當前由本程式開啟的所有 PyVista 視窗。
 - 保留先前功能：左右下拉、雙圖對照、同色軸範圍、顯示邊界、色階數、顯示網格。
+- 新增：UI 上「計算 MSE」按鈕（僅在雙圖對照時可按），直接顯示在 UI，不再塞進 3D 視窗。
 
 用法：
     python viewer_step7_gui_persistent.py
@@ -31,6 +32,7 @@ RESULT_CHOICES = [
 OPEN_PLOTTERS = []
 
 # -------------------- 資料/視覺工具 --------------------
+
 
 def _make_solution_grid(vis: Vis_tools, base_grid: pv.PolyData, kind: str):
     """回傳 (grid_with_scalar_solution, scalar_1d_array, scalar_name, title)
@@ -95,6 +97,41 @@ def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> b
     return True
 
 
+def _extract_scalar(vis: Vis_tools, base_grid: pv.PolyData, kind: str):
+    """
+    依 kind 產生對應的一維標量陣列（不做任何類型相容性判斷）。
+    - 'von'  → vis.stress_solution()      → g.point_data['solution']
+    - 'pred' → vis.stress_pr_solution()   → g.point_data['solution']
+    - 'dis'  → vis.dis_solution()         → 若為向量則取幅值
+    失敗回傳 None
+    """
+    g = base_grid.copy()
+    try:
+        vis.subset = g
+        if kind == 'von':
+            vis.stress_solution()
+            arr = g.point_data['solution']
+        elif kind == 'pred':
+            vis.stress_pr_solution()
+            arr = g.point_data['solution']
+        elif kind == 'dis':
+            vis.dis_solution()
+            arr = g.point_data['solution']
+            if arr.ndim == 2 and arr.shape[1] > 1:
+                arr = np.linalg.norm(arr, axis=1)
+        else:
+            return None
+
+        # 壓成一維（若仍為高維則視為無法比較）
+        if arr.ndim > 1:
+            return None
+        return arr
+    except Exception:
+        return None
+
+
+# -------------------- 視覺化（不再把 MSE 寫進 3D 視窗） --------------------
+
 def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str,
               lock_clim: bool, show_bc: bool, n_colors: int, show_edges: bool):
     """建立一個 Plotter 並以**非阻塞**方式顯示，回傳 plotter 物件。"""
@@ -151,6 +188,7 @@ def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str,
         p.add_mesh(gR, scalars=snameR, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges)
         p.add_scalar_bar(title=titleR); p.show_axes()
 
+    # 右（若有）
     if show_bc:
         cur += 1
         ok = _add_boundary_subplot(p, base, cur)
@@ -168,17 +206,17 @@ def visualize(file_path: str, left_key: str, enable_dual: bool, right_key: str,
 
 def build_ui(root):
     root.title(APP_TITLE)
-    root.minsize(820, 300)
+    root.minsize(820, 360)
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    w, h = 860, 320
+    w, h = 900, 360
     x, y = (sw - w) // 2, (sh - h) // 3
     root.geometry(f"{w}x{h}+{x}+{y}")
 
     frm = ttk.Frame(root, padding=16)
     frm.pack(fill=tk.BOTH, expand=True)
-    for c in range(4):
-        frm.columnconfigure(c, weight=1 if c == 1 else 0)
+    for c in range(5):
+        frm.columnconfigure(c, weight=1 if c in (1, 2) else 0)
 
     # 檔案
     ttk.Label(frm, text='選擇檔案 (.rst/.vtu/.vtk)：').grid(row=0, column=0, sticky='w')
@@ -204,8 +242,6 @@ def build_ui(root):
     combo_left.grid(row=3, column=0, sticky='w', pady=(4, 10))
 
     # 雙圖 + 右下拉
-    dual_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(frm, text='雙圖對照', variable=dual_var, command=lambda: combo_right.configure(state='readonly' if dual_var.get() else 'disabled')).grid(row=2, column=1, sticky='w')
     ttk.Label(frm, text='右側結果：').grid(row=2, column=2, sticky='w')
     right_var = tk.StringVar(value=RESULT_CHOICES[2][0])
     combo_right = ttk.Combobox(frm, values=[n for n, _ in RESULT_CHOICES], state='readonly', textvariable=right_var)
@@ -214,6 +250,17 @@ def build_ui(root):
     # 同色軸 / 邊界 / 色階數 / 網格
     lock_clim_var = tk.BooleanVar(value=True)
     show_bc_var = tk.BooleanVar(value=True)
+
+    # 雙圖對照（會連動右側下拉與 MSE 按鈕）
+    dual_var = tk.BooleanVar(value=True)
+
+    def update_dual_state():
+        combo_right.configure(state='readonly' if dual_var.get() else 'disabled')
+        btn_calc_mse.configure(state='normal' if dual_var.get() else 'disabled')
+        if not dual_var.get():
+            mse_var.set('—')  # 清空顯示
+
+    ttk.Checkbutton(frm, text='雙圖對照', variable=dual_var, command=update_dual_state).grid(row=2, column=1, sticky='w')
     ttk.Checkbutton(frm, text='同一個色軸範圍（雙圖時）', variable=lock_clim_var).grid(row=3, column=1, sticky='w')
     ttk.Checkbutton(frm, text='顯示邊界條件（若有 node_features）', variable=show_bc_var).grid(row=3, column=3, sticky='w')
 
@@ -224,9 +271,72 @@ def build_ui(root):
     edges_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frm, text='顯示網格（Edges）', variable=edges_var).grid(row=4, column=2, sticky='w')
 
-    # 按鈕列：開始 / 關閉所有視窗
+    # ---- MSE 區塊（只在雙圖對照時啟用）----
+    mse_frame = ttk.Frame(frm)
+    mse_frame.grid(row=5, column=0, columnspan=4, sticky='ew', pady=(8, 6))
+    mse_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(mse_frame, text='MSE (左 vs 右)：').grid(row=0, column=0, sticky='w')
+    mse_var = tk.StringVar(value='—')
+    lbl_mse = ttk.Label(mse_frame, textvariable=mse_var, width=24)
+    lbl_mse.grid(row=0, column=1, sticky='w')
+
+    def on_calc_mse():
+        if not dual_var.get():
+            messagebox.showinfo('提示', '請先勾選「雙圖對照」。')
+            return
+
+        path = file_var.get().strip()
+        if not path:
+            messagebox.showwarning('提醒', '請先選擇檔案。'); return
+        if not os.path.exists(path):
+            messagebox.showerror('錯誤', f'找不到檔案：\n{path}'); return
+
+        # 名稱轉 key
+        def name2key(name: str) -> str:
+            for n, k in RESULT_CHOICES:
+                if n == name: return k
+            return 'von'
+
+        left_key  = name2key(left_var.get())
+        right_key = name2key(right_var.get())
+
+        try:
+            vis = Vis_tools(path)
+            base = vis.subset
+
+            a = _extract_scalar(vis, base, left_key)
+            b = _extract_scalar(vis, base, right_key)
+
+            if (a is None) or (b is None):
+                mse_var.set('資料不足或欄位缺失')
+                return
+
+            if a.shape != b.shape:
+                mse_var.set(f'尺寸不一致 {a.shape} vs {b.shape}')
+                return
+
+            mask = np.isfinite(a) & np.isfinite(b)
+            if not np.any(mask):
+                mse_var.set('無有效資料可比較')
+                return
+
+            val = float(np.mean((a[mask] - b[mask])**2))
+            mse_var.set(f'{val:.6f}')
+
+        except Exception as e:
+            mse_var.set('計算失敗')
+            messagebox.showerror('MSE 計算失敗', f'原因：\n{e}')
+
+    btn_calc_mse = ttk.Button(mse_frame, text='計算 MSE', command=on_calc_mse)
+    btn_calc_mse.grid(row=0, column=2, sticky='e')
+
+    # 初始狀態同步一次
+    update_dual_state()
+
+    # ---- 按鈕列：開始 / 關閉所有視窗 ----
     btns = ttk.Frame(frm)
-    btns.grid(row=6, column=0, columnspan=4, sticky='ew')
+    btns.grid(row=6, column=0, columnspan=4, sticky='ew', pady=(6, 0))
 
     def on_start():
         path = file_var.get().strip()
