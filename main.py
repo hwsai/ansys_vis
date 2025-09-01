@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Step 3：在極簡 GUI 版加入「勾選顯示邊界」
-- 介面：選檔、結果下拉、[✓] 顯示邊界、開始
-- 若勾選且資料含有 node_features（且欄位滿足需求），右側會多一格顯示邊界點（Load/Fixed）
-- 仍維持最小化：不加 MSE、色階鎖定、快捷鍵等
+Step 4：在極簡 GUI 版加入「鎖定 2/3 同色階」
+- 介面：選檔、結果下拉、[✓] 顯示邊界、[✓] 鎖定 2/3 同色階、開始
+- 說明：
+  * 仍然一次只顯示一種結果（Displacement 或 Von/Pred）。
+  * 當勾選「鎖定 2/3 同色階」且選擇的是 Von 或 Pred 時：
+      會同時計算真實 Von 與 Pred 的極值範圍（若 Pred 欄位存在），
+      並用同一個色階範圍繪圖，方便你切換比較時色軸一致。
+  * 若資料沒有 Pred 欄位，會退回僅以所選結果的色階繪圖。
 
 用法：
-    python viewer_step3_gui_bc.py
+    python viewer_step4_gui_bc_clim.py
 """
 import os
 import sys
@@ -17,7 +21,7 @@ from tkinter import ttk, filedialog, messagebox
 import pyvista as pv
 from vis_lab import Vis_tools
 
-APP_TITLE = "最小可視化：選檔 + 結果 + 邊界"
+APP_TITLE = "最小可視化：選檔 + 結果 + 邊界 + 同色階"
 DEFAULT_DIR = "data"
 
 RESULT_CHOICES = [
@@ -27,9 +31,26 @@ RESULT_CHOICES = [
 ]
 
 
+def _extract_solution_array(vis: Vis_tools, base_grid: pv.PolyData, kind: str):
+    """回傳指定 kind 的 solution ndarray；kind in {'von','pred','dis'}。
+    會複製 base_grid，避免原地覆寫衝突。失敗時回傳 (None, None)。
+    """
+    g = base_grid.copy()
+    try:
+        vis.subset = g
+        if kind == 'von':
+            vis.stress_solution(); title = 'Von Mises stress'
+        elif kind == 'pred':
+            vis.stress_pr_solution(); title = 'Predicted stress'
+        else:
+            vis.dis_solution(); title = 'Displacement'
+        arr = g.point_data['solution']
+        return g, arr, title
+    except Exception as e:
+        return None, None, None
+
+
 def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> bool:
-    """若 grid 具備 node_features（至少 9 欄），在第 col 欄畫出 Load/Fixed 點。
-    回傳是否成功畫出。"""
     if 'node_features' not in grid.point_data:
         return False
     feats = grid.point_data['node_features']
@@ -49,8 +70,7 @@ def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> b
     if load_pts.size == 0 and fixed_pts.size == 0:
         return False
 
-    # 點大小依模型尺度調整（對角線 1%）
-    b = grid.bounds  # (xmin,xmax,ymin,ymax,zmin,zmax)
+    b = grid.bounds
     diag = float(np.linalg.norm([b[1]-b[0], b[3]-b[2], b[5]-b[4]]))
     psize = max(diag * 0.01, 2.0)
 
@@ -65,43 +85,57 @@ def _add_boundary_subplot(plotter: pv.Plotter, grid: pv.PolyData, col: int) -> b
     return True
 
 
-def visualize(file_path: str, result_key: str, show_bc: bool):
+def visualize(file_path: str, result_key: str, show_bc: bool, lock_clim: bool):
     try:
         vis = Vis_tools(file_path)
     except Exception as e:
         messagebox.showerror("載入失敗", f"無法載入檔案：\n{e}")
         return
 
-    # 選擇要顯示的結果
-    if result_key == "dis":
-        vis.dis_solution(); title = "Displacement"
-    elif result_key == "von":
-        vis.stress_solution(); title = "Von Mises stress"
-    else:
+    base = vis.subset  # 原始子網格
+
+    # 準備色階（僅在 von/pred 且勾選 lock_clim 時才試圖統一）
+    clim = None
+    if lock_clim and result_key in {"von", "pred"}:
+        # 嘗試同時取 von 與 pred 的值域（pred 可能不存在）
+        g_von, a_von, _ = _extract_solution_array(vis, base, 'von')
+        g_pred, a_pred, _ = _extract_solution_array(vis, base, 'pred')
+        vals = []
+        if a_von is not None and np.size(a_von) > 0:
+            vals.append((np.nanmin(a_von), np.nanmax(a_von)))
+        if a_pred is not None and np.size(a_pred) > 0:
+            vals.append((np.nanmin(a_pred), np.nanmax(a_pred)))
+        if vals:
+            vmin = float(np.nanmin([v[0] for v in vals]))
+            vmax = float(np.nanmax([v[1] for v in vals]))
+            if np.isfinite(vmin) and np.isfinite(vmax) and vmax > vmin:
+                clim = (vmin, vmax)
+            else:
+                clim = None  # 回退
+
+    # 產出實際要顯示的結果
+    g_show, _, title = _extract_solution_array(vis, base, result_key)
+    if g_show is None:
+        # 最後退回 Von Mises
+        vis.subset = base.copy()
         try:
-            vis.stress_pr_solution(); title = "Predicted stress"
-        except KeyError as e:
-            messagebox.showwarning("欄位缺失", f"找不到預測欄位：{e}\n改以 Von Mises 顯示。")
-            vis.stress_solution(); title = "Von Mises stress"
+            vis.stress_solution(); g_show = vis.subset; title = 'Von Mises stress'
+        except Exception as e:
+            messagebox.showerror('錯誤', f'無法產生可視化：\n{e}')
+            return
 
-    grid = vis.subset
-
-    # 需要畫邊界嗎？
     cols = 2 if show_bc else 1
     p = pv.Plotter(shape=(1, cols))
 
-    # 主結果
     p.subplot(0, 0)
     p.add_text(title, font_size=12, viewport=True, position=(0.02, 0.96))
-    p.add_mesh(grid, scalars="solution", cmap="jet")
+    p.add_mesh(g_show, scalars='solution', cmap='jet', clim=clim)
     p.add_scalar_bar(title=title)
     p.show_axes()
 
-    # 邊界（若勾選 + 成功）
     if show_bc:
-        ok = _add_boundary_subplot(p, grid, 1)
+        ok = _add_boundary_subplot(p, base, 1)
         if not ok:
-            # 若無法畫（無欄位或無點），仍顯示空白子圖並提醒
             p.subplot(0, 1)
             p.add_text('Boundary (資料不足)', font_size=12, viewport=True, position=(0.02, 0.96))
 
@@ -110,13 +144,15 @@ def visualize(file_path: str, result_key: str, show_bc: bool):
     p.show()
 
 
+# ------------------- GUI -------------------
+
 def build_ui(root):
     root.title(APP_TITLE)
-    root.minsize(560, 200)
+    root.minsize(620, 240)
 
     root.update_idletasks()
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-    w, h = 600, 220
+    w, h = 660, 260
     x, y = (sw - w) // 2, (sh - h) // 3
     root.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -149,9 +185,11 @@ def build_ui(root):
     combo.set(choice_names[1])  # 預設 Von Mises
     combo.grid(row=3, column=0, sticky="w", pady=(4, 10))
 
-    # --- 勾選：顯示邊界 ---
+    # --- 勾選：顯示邊界 / 鎖定色階 ---
     show_bc_var = tk.BooleanVar(value=True)
+    lock_clim_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(frm, text="顯示邊界條件（若有 node_features）", variable=show_bc_var).grid(row=3, column=1, sticky="w")
+    ttk.Checkbutton(frm, text="鎖定 2/3 同色階（若存在 Pred）", variable=lock_clim_var).grid(row=3, column=2, sticky="w")
 
     # --- 開始 ---
     def on_start():
@@ -165,16 +203,18 @@ def build_ui(root):
         sel_name = combo.get()
         key = next((k for name, k in RESULT_CHOICES if name == sel_name), "von")
         root.destroy()
-        visualize(path, key, show_bc_var.get())
+        visualize(path, key, show_bc_var.get(), lock_clim_var.get())
 
     ttk.Button(frm, text="開始", command=on_start).grid(row=3, column=3, sticky="e")
 
 
 if __name__ == "__main__":
     try:
-        root = tk.Tk()
+        import tkinter as tk
+        from tkinter import ttk, filedialog, messagebox
     except Exception as e:
-        print("無法建立 Tk 視窗：", e)
+        print("無法載入 Tkinter：", e)
         sys.exit(1)
+    root = tk.Tk()
     build_ui(root)
     root.mainloop()
