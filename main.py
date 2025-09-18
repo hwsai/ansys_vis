@@ -255,7 +255,7 @@ class PyVistaBackend:
         gL, scalL, titleL = left_payload
         p.subplot(0, cur)
         p.add_text(titleL, font_size=12, viewport=True, position=(0.02, 0.96))
-        p.add_mesh(gL, scalars=scalL, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges)
+        p.add_mesh(gL, scalars=scalL, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges, show_scalar_bar=False,)
         p.add_scalar_bar(title=titleL); p.show_axes()
 
         # 右圖
@@ -264,7 +264,7 @@ class PyVistaBackend:
             gR, scalR, titleR = right_payload
             p.subplot(0, cur)
             p.add_text(titleR, font_size=12, viewport=True, position=(0.02, 0.96))
-            p.add_mesh(gR, scalars=scalR, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges)
+            p.add_mesh(gR, scalars=scalR, cmap='jet', clim=clim, n_colors=n_colors, show_edges=show_edges ,show_scalar_bar=False,)
             p.add_scalar_bar(title=titleR); p.show_axes()
 
         # 邊界條件
