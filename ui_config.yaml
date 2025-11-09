@@ -1,0 +1,228 @@
+title: "AI-FEA 可視化介面（含網格顯示與狀態列）"
+
+ui:
+  # =====================================================
+  # 檔案選擇區
+  # =====================================================
+  - type: section
+    label: "輸入檔案"
+    children:
+      - type: row
+        children:
+          - type: file_input
+            id: file_path
+            type_id: file_type
+            label: "選擇檔案 (.rst/.vtu/.vtk)"
+            extensions: [".rst", ".vtu", ".vtk"]
+          - type: button
+            label: "開始"
+            action: run_visualization
+
+  # =====================================================
+  # 結果選項
+  # =====================================================
+  - type: section
+    label: "結果選項"
+    children:
+      - type: row
+        children:
+          - type: section
+            label: "左側圖層控制"
+            children:
+              - type: combobox
+                id: left_result
+                label: "主要結果"
+                options:
+                  - name: "Displacement"
+                    key: "dis"
+                  - name: "Von Mises stress"
+                    key: "von"
+                  - name: "Predicted stress"
+                    key: "pred"
+
+              - type: spinbox
+                id: opacity_left
+                label: "透明度 (0~1)"
+                from: 0
+                to: 1
+                default: 1
+
+              - type: checkbox
+                id: overlay_left_enabled
+                label: "開啟疊圖"
+                default: false
+
+              - type: combobox
+                id: overlay_left_type
+                label: "疊加內容"
+                options:
+                  - name: "邊界條件 (Boundary)"
+                    key: "bc"
+                  - name: "Grad-CAM 熱區"
+                    key: "gradcam"
+                  - name: "位移前後對比"
+                    key: "dis_diff"
+                  - name: "應力差異 (ΔStress)"
+                    key: "stress_diff"
+                  - name: "AI 預測誤差"
+                    key: "pred_error"
+                disable_if: "not overlay_left_enabled"
+
+          - type: section
+            label: "右側圖層控制"
+            children:
+              - type: combobox
+                id: right_result
+                label: "主要結果"
+                options:
+                  - name: "Displacement"
+                    key: "dis"
+                  - name: "Von Mises stress"
+                    key: "von"
+                  - name: "Predicted stress"
+                    key: "pred"
+                disable_if: "not dual_mode"
+
+              - type: spinbox
+                id: opacity_right
+                label: "透明度 (0~1)"
+                from: 0
+                to: 1
+                default: 1
+                disable_if: "not dual_mode"
+
+              - type: checkbox
+                id: overlay_right_enabled
+                label: "開啟疊圖"
+                default: false
+                disable_if: "not dual_mode"
+
+              - type: combobox
+                id: overlay_right_type
+                label: "疊加內容"
+                options:
+                  - name: "邊界條件 (Boundary)"
+                    key: "bc"
+                  - name: "Grad-CAM 熱區"
+                    key: "gradcam"
+                  - name: "位移前後對比"
+                    key: "dis_diff"
+                  - name: "應力差異 (ΔStress)"
+                    key: "stress_diff"
+                  - name: "AI 預測誤差"
+                    key: "pred_error"
+                disable_if: "not overlay_right_enabled"
+
+      - type: checkbox
+        id: dual_mode
+        label: "雙圖對照"
+        default: true
+
+  # =====================================================
+  # 顯示控制
+  # =====================================================
+  - type: section
+    label: "顯示控制"
+    children:
+      - type: row
+        children:
+          - type: section
+            label: "色軸範圍"
+            children:
+              - type: checkbox
+                id: lock_clim
+                label: "同一色軸範圍"
+                default: true
+              - type: checkbox
+                id: enable_custom_clim
+                label: "自訂上下限"
+                default: false
+                disable_if: "not lock_clim"
+              - type: row
+                children:
+                  - type: entry
+                    id: clim_min
+                    label: "下限值"
+                    default: ""
+                    disable_if: "not enable_custom_clim"
+                  - type: entry
+                    id: clim_max
+                    label: "上限值"
+                    default: ""
+                    disable_if: "not enable_custom_clim"
+
+          - type: section
+            label: "顏色設定"
+            children:
+              - type: combobox
+                id: colormap_mode
+                label: "顏色風格"
+                options:
+                  - name: "Jet (彩虹漸層)"
+                    key: "jet"
+                  - name: "Viridis (預設)"
+                    key: "viridis"
+                  - name: "Gray (灰階)"
+                    key: "gray"
+                  - name: "Coolwarm (雙色對比)"
+                    key: "coolwarm"
+                  - name: "Tab10 (分區色)"
+                    key: "tab10"
+                  - name: "Solid Blue"
+                    key: "Blues"
+                  - name: "Solid Red"
+                    key: "Reds"
+                  - name: "Rainbow"
+                    key: "rainbow"
+              - type: checkbox
+                id: enable_custom_colors
+                label: "使用離散化色階"
+                default: false
+              - type: spinbox
+                id: n_colors
+                label: "色階數"
+                from: 3
+                to: 256
+                default: 10
+                disable_if: "not enable_custom_colors"
+
+  # =====================================================
+  # 其他顯示選項
+  # =====================================================
+  - type: section
+    label: "其他顯示選項"
+    children:
+      - type: checkbox
+        id: show_bc
+        label: "顯示邊界條件"
+        default: true
+
+      - type: checkbox
+        id: show_edges
+        label: "顯示網格線 (Edges)"
+        default: true
+
+  # =====================================================
+  # 操作按鈕列
+  # =====================================================
+  - type: row
+    children:
+      - type: button
+        label: "計算誤差"
+        action: calc_metric
+      - type: button
+        label: "關閉視窗"
+        action: close_all
+
+  # =====================================================
+  # 狀態列
+  # =====================================================
+  - type: statusbar
+    id: status_bar
+    fields:
+      - name: "File"
+        id: "status_file"
+      - name: "Type"
+        id: "status_type"
+      - name: "Mode"
+        id: "status_mode"
